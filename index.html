@@ -6,12 +6,12 @@
   <title>Sopwith - HTML/JS</title>
   <style>
     :root { color-scheme: dark; }
-    html, body { margin: 0; height: 100%; background: #0b1020; font-family: system-ui, sans-serif; color: #e8eefc; }
-    #wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px; }
-    canvas { background: linear-gradient(#87b6ff, #cfe8ff 55%, #7fb2ff 56%, #87b6ff); border: 2px solid #2b3a67; border-radius: 8px; image-rendering: pixelated; max-width: 100%; height: auto; }
-    .hudline { font-size: 14px; opacity: 0.95; }
-    .help { max-width: 960px; font-size: 13px; color: #b8c7e6; text-align: center; line-height: 1.4; }
-    kbd { background: #1a2442; border: 1px solid #31406e; border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; font-family: inherit; font-size: 12px; color: #fff; }
+    html, body { margin: 0; height: 100%; background: radial-gradient(1200px 600px at 50% 0%, #1a2a4a, #0b1020 70%); font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif; color: #e8eefc; }
+    #wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 14px; }
+    canvas { background: #6fb6ff; border: 2px solid #3a4f7a; border-radius: 12px; box-shadow: 0 18px 50px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.08); max-width: 100%; height: auto; }
+    .hudline { font-size: 14px; color: #d9e6ff; text-shadow: 0 1px 2px rgba(0,0,0,.5); }
+    .help { max-width: 960px; font-size: 13px; color: #b8c7e6; text-align: center; line-height: 1.45; background: rgba(13,20,38,.45); padding: 8px 12px; border-radius: 10px; border: 1px solid rgba(120,160,220,.15); }
+    kbd { background: linear-gradient(#223055,#17213b); border: 1px solid #3a4f7a; border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; font-family: inherit; font-size: 12px; color: #fff; box-shadow: 0 1px 0 rgba(255,255,255,.08) inset; }
   </style>
 </head>
 <body>
@@ -45,7 +45,7 @@
   const MAX_FUEL = 1400;
   const MAX_BOMBS = 6;
   const MAX_AMMO = 120;
-  const ANGLE_STEP = Math.PI / 12; // 15° par pression (comme le Sopwith original)
+  const ANGLE_STEP = Math.PI / 12; // 15°
   const TURN_TIME = 22;
 
   const keys = new Set();
@@ -53,10 +53,28 @@
 
   function rand(a,b){ return a + Math.random()*(b-a); }
   function clamp(v,a,b){ return Math.max(a, Math.min(b,v)); }
+  function lerp(a,b,t){ return a + (b-a)*t; }
   function wrapX(x){ x %= WORLD_W; if (x < 0) x += WORLD_W; return x; }
   function dxWrap(a,b){ let d = a-b; if (d > WORLD_W/2) d -= WORLD_W; if (d < -WORLD_W/2) d += WORLD_W; return d; }
   function normAngle(a){ while (a <= -Math.PI) a += Math.PI*2; while (a > Math.PI) a -= Math.PI*2; return a; }
   function facingFromHeading(h){ return Math.cos(h) >= 0 ? 1 : -1; }
+
+  // Décors pré-calculés
+  let stars = [];
+  let farHills = [];
+  let nearHills = [];
+  let clouds = [];
+
+  function makeScenery() {
+    stars = Array.from({length: 70}, () => ({x: rand(0, WORLD_W), y: rand(10, 160), r: rand(0.6, 1.8), a: rand(0.15, 0.5)}));
+    farHills = [];
+    nearHills = [];
+    for (let x=0; x<=WORLD_W; x+=120) farHills.push({x, y: H-210 + Math.sin(x*0.004)*35 + rand(-18,18)});
+    for (let x=0; x<=WORLD_W; x+=90) nearHills.push({x, y: H-160 + Math.sin(x*0.006+1.2)*28 + rand(-14,14)});
+    clouds = Array.from({length: 18}, () => ({
+      x: rand(0, WORLD_W), y: rand(40, 170), s: rand(0.6, 1.4), sp: rand(0.02, 0.06), p: rand(0.3,0.55), a: rand(0.35, 0.75)
+    }));
+  }
 
   function makeTerrain() {
     const pts = [];
@@ -80,36 +98,41 @@
     const pts = terrain;
     const step = 40;
     const i = Math.floor(x / step);
-    const i2 = (i + 1) % (pts.length - 1 === i ? pts.length - 1 : pts.length);
-    const p1 = pts[i];
+    const p1 = pts[i] || pts[0];
     const p2 = pts[i+1] || {x: WORLD_W, y: pts[0].y};
     const t = (x - p1.x) / Math.max(1, (p2.x - p1.x));
     return p1.y + (p2.y - p1.y) * clamp(t,0,1);
   }
 
-  let terrain, player, bullets, bombs, explosions, enemyBullets, buildings, enemies, particles, score, lives, gameOver, win, message, messageT;
+  let terrain, player, bullets, bombs, explosions, enemyBullets, buildings, enemies, particles, smokes, rubble, score, lives, gameOver, win, message, messageT, shake;
 
   function addExplosion(x,y,scale=1, color='#ffcf5a') {
-    explosions.push({x:wrapX(x), y, r:2, max: 26*scale, life: 26, color});
-    for (let i=0;i<10*scale;i++) {
-      particles.push({x:wrapX(x), y, vx:rand(-2.5,2.5)*scale, vy:rand(-2.5,1.5)*scale, life: rand(18,35), color: i%2?color:'#fff2c7'});
+    x = wrapX(x);
+    explosions.push({x, y, r:2, max: 30*scale, life: 28, color});
+    explosions.push({x, y, r:1, max: 16*scale, life: 18, color:'#fff4cc'});
+    for (let i=0;i<14*scale;i++) {
+      const a = rand(0, Math.PI*2), sp = rand(0.5, 3.2)*scale;
+      particles.push({x, y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp - rand(0,1.2), life: rand(18,40), color: i%3===0?'#6b6b6b':(i%2?color:'#ffd9a0'), s: rand(1.5,3.2)});
     }
+    for (let i=0;i<5*scale;i++) smokes.push({x: x+rand(-6,6), y: y+rand(-4,4), vx: rand(-0.3,0.3), vy: rand(-0.6,-0.15), r: rand(8,16)*scale, life: rand(50,90), max: 90, a: rand(0.25,0.45)});
+    shake = Math.max(shake||0, 4*scale);
   }
 
   function resetGame(full=true) {
     terrain = makeTerrain();
-    bullets = []; bombs = []; explosions = []; enemyBullets = []; particles = [];
+    makeScenery();
+    bullets = []; bombs = []; explosions = []; enemyBullets = []; particles = []; smokes = []; rubble = [];
     buildings = [];
     enemies = [];
     if (full) { score = 0; lives = 3; }
-    gameOver = false; win = false; message = ''; messageT = 0;
+    gameOver = false; win = false; message = ''; messageT = 0; shake = 0;
 
     const homeX = 140;
     const homeY = groundYAt(homeX) - 8;
     player = {
       x: homeX, y: homeY, speed: 0, heading: 0, facing: 1, targetFacing: 1, turn: 0,
       fuel: MAX_FUEL, bombs: MAX_BOMBS, ammo: MAX_AMMO,
-      fireCd: 0, bombCd: 0, onGround: true, alive: true, respawn: 0, inv: 0
+      fireCd: 0, bombCd: 0, onGround: true, alive: true, respawn: 0, inv: 0, prop: 0
     };
 
     const spots = [2050, 2250, 2450, 2650, 2850, 3050, 3250];
@@ -117,9 +140,9 @@
     spots.forEach((sx,i) => {
       const gy = groundYAt(sx);
       const type = types[i % types.length];
-      const h = type==='tour'?55:(type==='usine'?42:34);
-      const w = type==='usine'?54:40;
-      buildings.push({x:sx, y:gy-h, w, h, hp: type==='tour'?3:2, maxHp: type==='tour'?3:2, type, dead:false});
+      const h = type==='tour'?58:(type==='usine'?46:36);
+      const w = type==='usine'?58:44;
+      buildings.push({x:sx, y:gy-h, w, h, hp: type==='tour'?3:2, maxHp: type==='tour'?3:2, type, dead:false, seed: rand(0,1000)});
     });
 
     for (let i=0;i<3;i++) spawnEnemy(2600 + i*350);
@@ -127,13 +150,13 @@
 
   function spawnEnemy(x) {
     const y = rand(90, H-240);
-    enemies.push({x: wrapX(x ?? rand(1800, WORLD_W-300)), y, vy: rand(-0.5,0.5), speed: rand(2.2,3.2), facing: Math.random()<0.5?-1:1, fireCd: rand(40,90), alive:true, hp:2});
+    enemies.push({x: wrapX(x ?? rand(1800, WORLD_W-300)), y, vy: rand(-0.5,0.5), speed: rand(2.2,3.2), facing: Math.random()<0.5?-1:1, heading: 0, fireCd: rand(40,90), alive:true, hp:2, prop: rand(0,10)});
   }
 
   function killPlayer() {
     if (!player.alive || player.inv > 0) return;
     player.alive = false;
-    addExplosion(player.x, player.y, 1.3, '#ff8a4a');
+    addExplosion(player.x, player.y, 1.4, '#ff8a4a');
     lives--;
     message = lives > 0 ? 'Touché !' : 'Escadrille perdue';
     messageT = 120;
@@ -145,7 +168,7 @@
     player.x = homeX; player.y = groundYAt(homeX)-8; player.speed = 0; player.heading = 0;
     player.facing = 1; player.targetFacing = 1; player.turn = 0;
     player.fuel = MAX_FUEL; player.bombs = MAX_BOMBS; player.ammo = MAX_AMMO;
-    player.onGround = true; player.alive = true; player.respawn = 0; player.inv = 120;
+    player.onGround = true; player.alive = true; player.respawn = 0; player.inv = 120; player.prop = 0;
   }
 
   function updatePlayer() {
@@ -154,20 +177,19 @@
       return;
     }
     if (player.inv > 0) player.inv--;
+    player.prop += 0.5 + player.speed*0.08;
 
     const left = keys.has('ArrowLeft') || keys.has('KeyA');
     const right = keys.has('ArrowRight') || keys.has('KeyD');
     const fire = keys.has('Space');
     const bombKey = keys.has('KeyB');
 
-    // Demi-tour (gauche/droite) : inverse le cap horizontal
     if (player.turn <= 0) {
       if (left && player.facing === 1) { player.targetFacing = -1; player.turn = TURN_TIME; }
       else if (right && player.facing === -1) { player.targetFacing = 1; player.turn = TURN_TIME; }
     } else {
       player.turn--;
       if (player.turn === Math.floor(TURN_TIME/2)) {
-        // miroir du cap par rapport à la verticale pour inverser la direction
         player.heading = normAngle(Math.PI - player.heading);
         player.facing = player.targetFacing;
       }
@@ -177,14 +199,11 @@
     player.facing = facingFromHeading(player.heading);
 
     if (player.onGround) {
-      // Roulage / décollage
       if (keys.has('ArrowUp') || keys.has('KeyW')) player.speed += THRUST * 1.8;
       if (keys.has('ArrowDown') || keys.has('KeyS')) player.speed -= THRUST * 3.0;
       player.speed = clamp(player.speed, 0, MAX_SPEED);
-      // cap à plat dans le sens de roulage
       player.heading = (player.facing >= 0) ? 0 : Math.PI;
       player.y = groundYAt(player.x) - 8;
-      // décollage si assez de vitesse et touche haut maintenue
       if ((keys.has('ArrowUp') || keys.has('KeyW')) && player.speed >= 2.4) {
         player.onGround = false;
         player.heading = (player.facing >= 0) ? -ANGLE_STEP : normAngle(Math.PI + ANGLE_STEP);
@@ -193,20 +212,19 @@
     }
 
     if (!player.onGround) {
-      // Vol : le moteur pousse dans la direction du nez
       player.speed += THRUST * 0.55;
-      // la gravité accélère en piqué et freine en montée
       player.speed += -GRAVITY * Math.sin(player.heading) * 1.4;
       player.speed = clamp(player.speed - DRAG, 0.4, MAX_SPEED);
-      // décrochage si trop lent
       if (player.speed < STALL_SPEED) {
-        player.heading += (player.facing >= 0 ? 1 : -1) * 0.03; // nez pique
+        player.heading += (player.facing >= 0 ? 1 : -1) * 0.03;
         player.speed += 0.03;
       }
       player.x = wrapX(player.x + Math.cos(player.heading) * player.speed);
       player.y += Math.sin(player.heading) * player.speed;
       player.fuel -= 0.35 + player.speed * 0.03;
       if (player.fuel <= 0) { player.fuel = 0; player.speed *= 0.995; player.heading += (player.facing >= 0 ? 1 : -1) * 0.01; message = 'Panne sèche !'; messageT = 40; }
+      // fumée moteur légère si abîmé (carburant bas) / vitesse
+      if (player.fuel < MAX_FUEL*0.2 && Math.random() < 0.15) smokes.push({x:player.x, y:player.y, vx:rand(-0.2,0.2), vy:rand(-0.3,-0.05), r:rand(4,8), life:40, max:40, a:0.18});
     } else {
       player.x = wrapX(player.x + Math.cos(player.heading) * player.speed);
     }
@@ -234,7 +252,6 @@
     }
     if (player.y < 18) { player.y = 18; }
 
-    // Ravitaillement sur la piste
     const homeX = 140;
     const nearHome = Math.abs(dxWrap(player.x, homeX)) < 70;
     if (player.onGround && nearHome) {
@@ -251,11 +268,11 @@
     if (fire && player.fireCd === 0 && player.ammo >= 1 && !player.onGround) {
       const bvx = Math.cos(player.heading) * (BULLET_SPEED + player.speed);
       const bvy = Math.sin(player.heading) * (BULLET_SPEED + player.speed);
-      bullets.push({x: player.x + Math.cos(player.heading)*18, y: player.y + Math.sin(player.heading)*18, vx: bvx, vy: bvy, life: 70, friendly:true});
+      bullets.push({x: player.x + Math.cos(player.heading)*18, y: player.y + Math.sin(player.heading)*18, vx: bvx, vy: bvy, px: player.x, py: player.y, life: 70, friendly:true});
       player.fireCd = FIRE_COOLDOWN; player.ammo -= 1;
     }
     if (bombKey && player.bombCd === 0 && Math.floor(player.bombs) >= 1 && !player.onGround) {
-      bombs.push({x: player.x, y: player.y + 8, vx: Math.cos(player.heading) * player.speed * 0.8, vy: Math.sin(player.heading) * player.speed * 0.5 + 0.8, friendly:true});
+      bombs.push({x: player.x, y: player.y + 8, vx: Math.cos(player.heading) * player.speed * 0.8, vy: Math.sin(player.heading) * player.speed * 0.5 + 0.8, ang: player.heading, friendly:true});
       player.bombCd = BOMB_COOLDOWN; player.bombs = Math.floor(player.bombs)-1;
     }
   }
@@ -263,10 +280,11 @@
   function updateBullets() {
     for (const arr of [bullets, enemyBullets]) {
       for (const b of arr) {
+        b.px = b.x; b.py = b.y;
         b.x = wrapX(b.x + b.vx);
         b.y += b.vy;
         b.life--;
-        if (b.y >= groundYAt(b.x)) { b.life = 0; addExplosion(b.x, groundYAt(b.x)-2, 0.3, '#d9d9d9'); }
+        if (b.y >= groundYAt(b.x)) { b.life = 0; addExplosion(b.x, groundYAt(b.x)-2, 0.25, '#cdbb88'); }
       }
     }
     bullets = bullets.filter(b => b.life > 0);
@@ -276,21 +294,20 @@
   function updateBombs() {
     for (const b of bombs) {
       b.vy += 0.12;
+      b.ang += 0.03;
       b.x = wrapX(b.x + b.vx);
       b.y += b.vy;
       if (b.y >= groundYAt(b.x)-2) {
         b.dead = true;
-        addExplosion(b.x, groundYAt(b.x)-6, 1.0, '#ffb347');
-        // damage buildings
+        addExplosion(b.x, groundYAt(b.x)-6, 1.1, '#ffb347');
         for (const bd of buildings) {
           if (bd.dead) continue;
           const dx = Math.abs(dxWrap(b.x, bd.x + bd.w/2));
           if (dx < bd.w/2 + 18 && groundYAt(bd.x+bd.w/2) - b.y < bd.h + 20) {
             bd.hp -= 2;
-            if (bd.hp <= 0 && !bd.dead) { bd.dead = true; score += 150; addExplosion(bd.x+bd.w/2, bd.y+bd.h/2, 1.4, '#ff7b39'); }
+            if (bd.hp <= 0 && !bd.dead) { bd.dead = true; score += 150; rubble.push({x:bd.x, y:groundYAt(bd.x+bd.w/2), w:bd.w, type:bd.type}); addExplosion(bd.x+bd.w/2, bd.y+bd.h/2, 1.5, '#ff7b39'); }
           }
         }
-        // damage enemies near blast
         for (const e of enemies) {
           if (!e.alive) continue;
           const dx = Math.abs(dxWrap(b.x, e.x));
@@ -310,31 +327,31 @@
   function updateEnemies() {
     for (const e of enemies) {
       if (!e.alive) continue;
+      e.prop = (e.prop||0) + 0.4 + e.speed*0.06;
       e.x = wrapX(e.x + e.speed * e.facing);
       e.y += e.vy + Math.sin((performance.now()/500) + e.x*0.01)*0.15;
       if (Math.random() < 0.02) e.vy = rand(-0.6,0.6);
       e.y = clamp(e.y, 60, H - 170);
       if (e.x < 1700 || e.x > WORLD_W-120) e.facing *= -1;
       if (Math.random() < 0.005) e.facing *= -1;
+      e.heading = e.facing >= 0 ? 0 : Math.PI;
 
       const dx = dxWrap(player.x, e.x);
       const dy = player.y - e.y;
       if (player.alive && Math.sign(dx) === e.facing && Math.abs(dx) < 420 && Math.abs(dy) < 80) {
         if (e.fireCd <= 0) {
-          enemyBullets.push({x:e.x + e.facing*16, y:e.y+2, vx:e.facing*7.2, vy:dy*0.01, life: 80});
+          enemyBullets.push({x:e.x + e.facing*16, y:e.y+2, vx:e.facing*7.2, vy:dy*0.01, px:e.x, py:e.y, life: 80});
           e.fireCd = rand(55, 110);
         }
       }
       if (e.fireCd > 0) e.fireCd--;
 
-      // collide with player
       if (player.alive && player.inv<=0) {
         if (Math.abs(dxWrap(player.x,e.x)) < 22 && Math.abs(player.y-e.y) < 14) {
           e.alive = false; score += 100; addExplosion(e.x,e.y,1.1,'#ff8a4a'); killPlayer();
         }
       }
     }
-    // bullets vs enemies
     for (const b of bullets) {
       for (const e of enemies) {
         if (!e.alive) continue;
@@ -347,28 +364,27 @@
         if (bd.dead) continue;
         if (Math.abs(dxWrap(b.x, bd.x+bd.w/2)) < bd.w/2 && b.y > bd.y && b.y < bd.y+bd.h) {
           b.life = 0; bd.hp -= 1; addExplosion(b.x,b.y,0.3,'#ffd36b');
-          if (bd.hp <= 0) { bd.dead = true; score += 150; addExplosion(bd.x+bd.w/2, bd.y+bd.h/2, 1.3, '#ff7b39'); }
+          if (bd.hp <= 0) { bd.dead = true; score += 150; rubble.push({x:bd.x, y:groundYAt(bd.x+bd.w/2), w:bd.w, type:bd.type}); addExplosion(bd.x+bd.w/2, bd.y+bd.h/2, 1.4, '#ff7b39'); }
         }
       }
     }
-    // enemy bullets vs player
     for (const b of enemyBullets) {
       if (!player.alive || player.inv>0) continue;
       if (Math.abs(dxWrap(b.x, player.x)) < 16 && Math.abs(b.y - player.y) < 10) { b.life = 0; killPlayer(); }
     }
-
-    // maintain some enemies
     const aliveEnemies = enemies.filter(e=>e.alive).length;
     if (aliveEnemies < 2 && Math.random() < 0.01) spawnEnemy(player.x + (Math.random()<0.5?-1:1)*rand(500,900));
-
     if (buildings.every(b=>b.dead) && !win) { win = true; message = 'Victoire ! Tous les bâtiments sont détruits.'; messageT = 9999; }
   }
 
   function updateFX() {
-    for (const p of particles) { p.x = wrapX(p.x + p.vx); p.y += p.vy; p.vy += 0.03; p.life--; }
+    for (const p of particles) { p.x = wrapX(p.x + p.vx); p.y += p.vy; p.vy += 0.04; p.vx *= 0.99; p.life--; }
     particles = particles.filter(p=>p.life>0 && p.y < H+30);
-    for (const e of explosions) { e.r += 1.6; e.life--; }
+    for (const s of smokes) { s.x = wrapX(s.x + s.vx); s.y += s.vy; s.r += 0.25; s.life--; }
+    smokes = smokes.filter(s=>s.life>0);
+    for (const e of explosions) { e.r += 1.7; e.life--; }
     explosions = explosions.filter(e=>e.life>0);
+    if (shake > 0) shake *= 0.85; if (shake < 0.2) shake = 0;
     if (messageT > 0) messageT--; else if (!win) message = '';
   }
 
@@ -388,136 +404,393 @@
     return sx + W/2;
   }
 
+  // --- Rendu ---
+  function drawSky(camX) {
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'#2e63b8'); g.addColorStop(0.35,'#5fa8e6'); g.addColorStop(0.7,'#bfe3ff'); g.addColorStop(1,'#eaf6ff');
+    ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+
+    // soleil
+    const sunX = W*0.78, sunY = H*0.18;
+    const sg = ctx.createRadialGradient(sunX,sunY,10,sunX,sunY,120);
+    sg.addColorStop(0,'rgba(255,250,220,0.95)'); sg.addColorStop(0.3,'rgba(255,230,150,0.35)'); sg.addColorStop(1,'rgba(255,230,150,0)');
+    ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(sunX,sunY,120,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,248,210,0.95)'; ctx.beginPath(); ctx.arc(sunX,sunY,22,0,Math.PI*2); ctx.fill();
+
+    // nuages lointains
+    for (const c of clouds) {
+      const wx = (c.x + performance.now()*c.sp*10) % WORLD_W;
+      const sx = worldToScreenX(wx, camX * c.p);
+      if (sx < -160 || sx > W+160) continue;
+      const y = c.y, s = c.s;
+      ctx.save(); ctx.globalAlpha = c.a * 0.5; ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.ellipse(sx, y, 46*s, 16*s, 0, 0, Math.PI*2);
+      ctx.ellipse(sx+28*s, y+3*s, 34*s, 13*s, 0, 0, Math.PI*2);
+      ctx.ellipse(sx-26*s, y+4*s, 30*s, 12*s, 0, 0, Math.PI*2);
+      ctx.fill(); ctx.restore();
+    }
+
+    // collines lointaines
+    function drawHillLayer(list, par, color, baseY) {
+      ctx.fillStyle = color; ctx.beginPath();
+      let started=false;
+      for (let sx=-120; sx<=W+120; sx+=30) {
+        const wx = wrapX(camX*par + sx - W/2);
+        const idx = Math.floor(wx/120); // approx
+        const a = list[Math.floor((wx/(par===0.25?120:90))) % list.length] || list[0];
+        const y = baseY + Math.sin(wx*0.003 + par*10)*22 + Math.sin(wx*0.009)*10;
+        if (!started){ ctx.moveTo(sx,H); ctx.lineTo(sx,y); started=true; } else ctx.lineTo(sx,y);
+      }
+      ctx.lineTo(W+120,H); ctx.closePath(); ctx.fill();
+    }
+    // simpler hill layers
+    ctx.fillStyle = '#7fb0cf';
+    ctx.beginPath(); ctx.moveTo(-20,H);
+    for (let sx=-20; sx<=W+20; sx+=40){ const wx = camX*0.25 + sx; const y = H-190 + Math.sin(wx*0.004)*28 + Math.sin(wx*0.01)*12; ctx.lineTo(sx,y); }
+    ctx.lineTo(W+20,H); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#6aa07a';
+    ctx.beginPath(); ctx.moveTo(-20,H);
+    for (let sx=-20; sx<=W+20; sx+=30){ const wx = camX*0.45 + sx; const y = H-150 + Math.sin(wx*0.005+1)*22 + Math.sin(wx*0.013)*10; ctx.lineTo(sx,y); }
+    ctx.lineTo(W+20,H); ctx.closePath(); ctx.fill();
+  }
+
   function drawTerrain(camX) {
+    // terre
     ctx.beginPath();
     let started = false;
-    for (let sx = -80; sx <= W+80; sx += 20) {
+    for (let sx = -80; sx <= W+80; sx += 12) {
       const wx = wrapX(camX + sx - W/2);
       const gy = groundYAt(wx);
-      const px = sx;
-      if (!started) { ctx.moveTo(px, H); ctx.lineTo(px, gy); started = true; }
-      else ctx.lineTo(px, gy);
+      if (!started) { ctx.moveTo(sx, H); ctx.lineTo(sx, gy); started = true; }
+      else ctx.lineTo(sx, gy);
     }
     ctx.lineTo(W+80, H); ctx.closePath();
-    ctx.fillStyle = '#3f7d3a'; ctx.fill();
-    ctx.strokeStyle = '#2d5f2a'; ctx.lineWidth = 2; ctx.stroke();
+    const eg = ctx.createLinearGradient(0,H-220,0,H);
+    eg.addColorStop(0,'#5a4633'); eg.addColorStop(0.25,'#6b523a'); eg.addColorStop(1,'#4a3726');
+    ctx.fillStyle = eg; ctx.fill();
 
-    // runway
+    // herbe
+    ctx.beginPath(); started = false;
+    for (let sx = -80; sx <= W+80; sx += 12) {
+      const wx = wrapX(camX + sx - W/2);
+      const gy = groundYAt(wx);
+      if (!started) { ctx.moveTo(sx, gy+18); ctx.lineTo(sx, gy); started = true; }
+      else ctx.lineTo(sx, gy);
+    }
+    for (let sx = W+80; sx >= -80; sx -= 12) {
+      const wx = wrapX(camX + sx - W/2);
+      const gy = groundYAt(wx) + 14 + Math.sin(wx*0.2)*2;
+      ctx.lineTo(sx, gy);
+    }
+    ctx.closePath();
+    const gg = ctx.createLinearGradient(0,H-200,0,H-60);
+    gg.addColorStop(0,'#6fbe55'); gg.addColorStop(1,'#3f7d3a');
+    ctx.fillStyle = gg; ctx.fill();
+
+    // contour
+    ctx.beginPath(); started = false;
+    for (let sx = -80; sx <= W+80; sx += 12) {
+      const wx = wrapX(camX + sx - W/2);
+      const gy = groundYAt(wx);
+      if (!started) { ctx.moveTo(sx, gy); started = true; } else ctx.lineTo(sx, gy);
+    }
+    ctx.strokeStyle = 'rgba(220,255,200,0.35)'; ctx.lineWidth = 2; ctx.stroke();
+
+    // pistes/base
     const baseX = worldToScreenX(140, camX);
     const baseY = groundYAt(140);
-    if (baseX > -120 && baseX < W+120) {
-      ctx.fillStyle = '#666';
-      ctx.fillRect(baseX-70, baseY-4, 140, 6);
-      ctx.strokeStyle = '#ddd';
-      ctx.setLineDash([8,8]); ctx.beginPath(); ctx.moveTo(baseX-55, baseY-1); ctx.lineTo(baseX+55, baseY-1); ctx.stroke(); ctx.setLineDash([]);
-      ctx.fillStyle = '#4a90d9'; ctx.fillRect(baseX-18, baseY-28, 36, 24);
-      ctx.fillStyle = '#7ec0ff'; ctx.fillRect(baseX-10, baseY-22, 8, 8); ctx.fillRect(baseX+2, baseY-22, 8, 8);
+    if (baseX > -160 && baseX < W+160) {
+      // piste
+      ctx.fillStyle = '#5a5f66'; ctx.fillRect(baseX-80, baseY-3, 160, 8);
+      ctx.fillStyle = '#6b717a'; ctx.fillRect(baseX-80, baseY-3, 160, 3);
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 2; ctx.setLineDash([10,10]);
+      ctx.beginPath(); ctx.moveTo(baseX-60, baseY+1); ctx.lineTo(baseX+60, baseY+1); ctx.stroke(); ctx.setLineDash([]);
+      // hangar allié
+      ctx.fillStyle = '#c9d6e6'; ctx.fillRect(baseX-22, baseY-30, 44, 27);
+      ctx.fillStyle = '#9fb3cc'; ctx.beginPath(); ctx.moveTo(baseX-26, baseY-30); ctx.lineTo(baseX, baseY-44); ctx.lineTo(baseX+26, baseY-30); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#2f4f73'; ctx.fillRect(baseX-8, baseY-16, 16, 13);
+      ctx.fillStyle = 'rgba(255,240,180,0.85)'; ctx.fillRect(baseX-16, baseY-24, 6, 6); ctx.fillRect(baseX+10, baseY-24, 6, 6);
+      // drapeau
+      ctx.strokeStyle = '#ddd'; ctx.beginPath(); ctx.moveTo(baseX+30, baseY-30); ctx.lineTo(baseX+30, baseY-50); ctx.stroke();
+      ctx.fillStyle = '#3d7be0'; ctx.beginPath(); ctx.moveTo(baseX+30, baseY-50); ctx.lineTo(baseX+46, baseY-45); ctx.lineTo(baseX+30, baseY-40); ctx.closePath(); ctx.fill();
+    }
+  }
+
+  function drawRubble(camX) {
+    for (const r of rubble) {
+      const sx = worldToScreenX(r.x + r.w/2, camX);
+      if (sx < -60 || sx > W+60) continue;
+      const y = r.y;
+      ctx.fillStyle = '#4a4a4a';
+      ctx.beginPath(); ctx.moveTo(sx-r.w*0.4, y); ctx.lineTo(sx-r.w*0.15, y-6); ctx.lineTo(sx+r.w*0.1, y-3); ctx.lineTo(sx+r.w*0.4, y); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#2f2f2f'; ctx.fillRect(sx-6,y-3,5,3); ctx.fillRect(sx+4,y-4,4,4);
     }
   }
 
   function drawBuilding(b, camX) {
-    if (b.dead) return;
     const sx = worldToScreenX(b.x + b.w/2, camX);
-    if (sx < -80 || sx > W+80) return;
-    const x = sx - b.w/2, y = b.y;
-    ctx.fillStyle = b.type==='tour' ? '#8a5a44' : (b.type==='usine' ? '#6b6f7a' : '#7a4f3a');
-    ctx.fillRect(x, y, b.w, b.h);
-    ctx.strokeStyle = '#2d211a'; ctx.strokeRect(x, y, b.w, b.h);
-    ctx.fillStyle = '#d8e7ff';
-    for (let wy=y+8; wy<y+b.h-6; wy+=12) for (let wx=x+6; wx<x+b.w-6; wx+=12) ctx.fillRect(wx,wy,5,5);
+    if (sx < -100 || sx > W+100) return;
+    const x = sx - b.w/2, y = b.y, w = b.w, h = b.h;
+    if (b.dead) return;
+
+    // fumée si endommagé
+    if (b.hp < b.maxHp && Math.random() < 0.08) smokes.push({x: b.x + w/2 + rand(-6,6), y: b.y + 4, vx: rand(-0.2,0.2), vy: rand(-0.5,-0.2), r: rand(5,10), life: 50, max: 50, a: 0.22});
+
+    if (b.type === 'hangar') {
+      const g = ctx.createLinearGradient(x,y,x+w,y); g.addColorStop(0,'#8a6a4a'); g.addColorStop(1,'#6f5236');
+      ctx.fillStyle = g; ctx.fillRect(x, y+8, w, h-8);
+      ctx.fillStyle = '#5b6b7a'; ctx.beginPath(); ctx.moveTo(x-4,y+10); ctx.quadraticCurveTo(x+w/2,y-10,x+w+4,y+10); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#44505c'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = '#2b3440'; ctx.fillRect(x+w*0.3, y+h*0.45, w*0.4, h*0.55-8);
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.beginPath(); ctx.moveTo(x+w/2,y+h*0.45); ctx.lineTo(x+w/2,y+h-8); ctx.stroke();
+    } else if (b.type === 'tour') {
+      const g = ctx.createLinearGradient(x,y,x,y+h); g.addColorStop(0,'#9a8f86'); g.addColorStop(1,'#6f655d');
+      ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = '#5b4f48'; ctx.beginPath(); ctx.moveTo(x-3,y); ctx.lineTo(x+w/2,y-12); ctx.lineTo(x+w+3,y); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(255,244,200,0.85)';
+      for (let wy=y+10; wy<y+h-8; wy+=14) for (let wx=x+7; wx<x+w-6; wx+=12) ctx.fillRect(wx,wy,5,6);
+      ctx.fillStyle = '#4a403a'; ctx.fillRect(x+w/2-3, y-18, 6, 8);
+    } else { // usine
+      const g = ctx.createLinearGradient(x,y,x+w,y+h); g.addColorStop(0,'#808892'); g.addColorStop(1,'#5d646d');
+      ctx.fillStyle = g; ctx.fillRect(x, y+6, w, h-6);
+      ctx.fillStyle = '#6b737d'; ctx.fillRect(x+4,y,w*0.55,h);
+      ctx.fillStyle = '#505861'; ctx.fillRect(x+w*0.65,y-14,8,20); ctx.fillRect(x+w*0.82,y-22,8,28);
+      ctx.fillStyle = '#3e454d'; ctx.beginPath(); ctx.moveTo(x+w*0.65-2,y-14); ctx.lineTo(x+w*0.65+10,y-14); ctx.lineTo(x+w*0.65+8,y-18); ctx.lineTo(x+w*0.65,y-18); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x+w*0.82-2,y-22); ctx.lineTo(x+w*0.82+10,y-22); ctx.lineTo(x+w*0.82+8,y-26); ctx.lineTo(x+w*0.82,y-26); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(200,230,255,0.75)';
+      for (let wy=y+14; wy<y+h-8; wy+=12) for (let wx=x+8; wx<x+w*0.55-4; wx+=11) ctx.fillRect(wx,wy,5,5);
+    }
+    ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1; ctx.strokeRect(x, y, w, h);
+
     if (b.hp < b.maxHp) {
-      ctx.fillStyle = '#222'; ctx.fillRect(x, y-8, b.w, 4);
-      ctx.fillStyle = '#e74c3c'; ctx.fillRect(x, y-8, b.w*(b.hp/b.maxHp), 4);
+      ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(x, y-9, w, 5);
+      ctx.fillStyle = b.hp/b.maxHp > 0.5 ? '#5fd35f' : '#e74c3c'; ctx.fillRect(x+1, y-8, (w-2)*(b.hp/b.maxHp), 3);
     }
   }
 
-  function drawPlane(p, camX, colorMain='#e6edf7', colorAccent='#2f5da8', enemy=false) {
+  function drawPlane(p, camX, enemy=false) {
     const sx = worldToScreenX(p.x, camX);
-    if (sx < -60 || sx > W+60) return;
+    if (sx < -70 || sx > W+70) return;
     const sy = p.y;
     ctx.save();
     ctx.translate(sx, sy);
     let ang = (p.heading !== undefined) ? p.heading : (p.facing >= 0 ? 0 : Math.PI);
     const drawFacing = Math.cos(ang) >= 0 ? 1 : -1;
     ctx.scale(drawFacing, 1);
-    // angle de tangage relatif au sens de dessin
     let tilt = drawFacing === 1 ? ang : normAngle(Math.PI - ang);
     ctx.rotate(tilt);
-    // body
-    ctx.fillStyle = colorMain;
-    ctx.beginPath(); ctx.ellipse(0, 0, 16, 5, 0, 0, Math.PI*2); ctx.fill();
-    // wings
-    ctx.fillStyle = colorAccent;
-    ctx.fillRect(-10, -10, 20, 3);
-    ctx.fillRect(-8, 7, 16, 3);
-    // tail
-    ctx.fillRect(-15, -6, 5, 4);
-    ctx.fillRect(-16, -2, 3, 6);
-    // struts/prop
-    ctx.strokeStyle = '#c9d6ea'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(-4,-7); ctx.lineTo(-2,0); ctx.moveTo(4,-7); ctx.lineTo(2,0); ctx.stroke();
-    ctx.fillStyle = '#444'; ctx.fillRect(15,-1,2,2);
-    if (!enemy && p.inv > 0 && Math.floor(performance.now()/80)%2===0) { ctx.globalAlpha = 0.4; }
+
+    const blink = !enemy && p.inv > 0 && Math.floor(performance.now()/80)%2===0;
+    if (blink) ctx.globalAlpha = 0.45;
+
+    const bodyCol = enemy ? '#e8d5c4' : '#f3efe2';
+    const bodyDark = enemy ? '#c9a98b' : '#d8d2c0';
+    const accent = enemy ? '#8c2f2f' : '#2f5da8';
+    const accent2 = enemy ? '#5a1f1f' : '#1f3f78';
+    const metal = '#8f9aa8';
+
+    // ombre légère ailes inf
+    ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fillRect(-9, 8, 18, 4);
+
+    // aile inférieure
+    roundRect(-13, 6, 26, 4, 2, accent, accent2);
+    // aile supérieure
+    roundRect(-14, -11, 28, 4.5, 2, accent, accent2);
+    // nervures
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 1;
+    for (let rx=-10; rx<=10; rx+=5){ ctx.beginPath(); ctx.moveTo(rx,-10.5); ctx.lineTo(rx,-7); ctx.stroke(); ctx.beginPath(); ctx.moveTo(rx-1,6.5); ctx.lineTo(rx-1,9.5); ctx.stroke(); }
+
+    // montants
+    ctx.strokeStyle = metal; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(-5,-7); ctx.lineTo(-4,6); ctx.moveTo(5,-7); ctx.lineTo(4,6); ctx.stroke();
+
+    // fuselage
+    const fg = ctx.createLinearGradient(0,-6,0,6); fg.addColorStop(0, bodyCol); fg.addColorStop(1, bodyDark);
+    ctx.fillStyle = fg;
+    ctx.beginPath();
+    ctx.moveTo(16,0); ctx.quadraticCurveTo(14,-5,6,-5); ctx.lineTo(-12,-4); ctx.quadraticCurveTo(-17,-2,-17,0);
+    ctx.quadraticCurveTo(-17,2,-12,4); ctx.lineTo(6,5); ctx.quadraticCurveTo(14,5,16,0); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 1; ctx.stroke();
+
+    // cockpit
+    ctx.fillStyle = '#6aaed6'; ctx.beginPath(); ctx.ellipse(1,-4,4,2.5,0,Math.PI,0); ctx.fill();
+    ctx.fillStyle = '#2a2a2a'; ctx.beginPath(); ctx.arc(-1,-4.5,1.6,0,Math.PI*2); ctx.fill(); // pilote
+
+    // queue
+    ctx.fillStyle = bodyCol; ctx.beginPath(); ctx.moveTo(-12,-3); ctx.lineTo(-18,-7); ctx.lineTo(-16,-3); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = accent; ctx.beginPath(); ctx.moveTo(-16,-1); ctx.lineTo(-20,-1); ctx.lineTo(-19,4); ctx.lineTo(-15,3); ctx.closePath(); ctx.fill();
+
+    // train d'atterrissage
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(2,5); ctx.lineTo(5,9); ctx.moveTo(-2,5); ctx.lineTo(-5,9); ctx.stroke();
+    ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(5.5,9.5,2.2,0,Math.PI*2); ctx.arc(-5.5,9.5,2.2,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#888'; ctx.beginPath(); ctx.arc(5.5,9.5,0.8,0,Math.PI*2); ctx.arc(-5.5,9.5,0.8,0,Math.PI*2); ctx.fill();
+
+    // hélice (animée)
+    const prop = p.prop || 0;
+    ctx.save(); ctx.translate(16.5,0);
+    ctx.fillStyle = '#caa24d'; ctx.beginPath(); ctx.arc(0,0,1.8,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 0.55; ctx.fillStyle = '#d9d9d9';
+    const blur = 6 + Math.sin(prop*2)*1.5;
+    ctx.beginPath(); ctx.ellipse(0,0,1.2,blur,0,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 0.9; ctx.rotate(prop);
+    ctx.fillStyle = '#b07d2b'; ctx.fillRect(-0.8,-7,1.6,14);
+    ctx.restore();
+
+    // marquage
+    ctx.fillStyle = enemy ? '#f2d38a' : '#e8edf7';
+    ctx.beginPath(); ctx.arc(-6,-9,1.6,0,Math.PI*2); ctx.fill();
+
+    ctx.restore();
+  }
+
+  function roundRect(x,y,w,h,r,fill,stroke){
+    ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+    if (fill){ ctx.fillStyle = fill; ctx.fill(); }
+    if (stroke){ ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
+  }
+
+  function drawBullets(camX) {
+    // traînées
+    ctx.lineCap = 'round';
+    for (const b of bullets) {
+      const sx = worldToScreenX(b.x, camX), sy = b.y;
+      const px = worldToScreenX(b.px ?? b.x-b.vx, camX), py = b.py ?? b.y-b.vy;
+      if (sx<-20||sx>W+20) continue;
+      ctx.strokeStyle = 'rgba(255,245,180,0.9)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(sx,sy); ctx.stroke();
+      ctx.fillStyle = '#fff9d6'; ctx.beginPath(); ctx.arc(sx,sy,1.6,0,Math.PI*2); ctx.fill();
+    }
+    for (const b of enemyBullets) {
+      const sx = worldToScreenX(b.x, camX), sy = b.y;
+      const px = worldToScreenX(b.px ?? b.x-b.vx, camX), py = b.py ?? b.y-b.vy;
+      if (sx<-20||sx>W+20) continue;
+      ctx.strokeStyle = 'rgba(255,210,120,0.9)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(sx,sy); ctx.stroke();
+      ctx.fillStyle = '#ffe2a0'; ctx.beginPath(); ctx.arc(sx,sy,1.6,0,Math.PI*2); ctx.fill();
+    }
+  }
+
+  function drawBombs(camX) {
+    for (const b of bombs) {
+      const sx = worldToScreenX(b.x, camX); if (sx<-20||sx>W+20) continue;
+      ctx.save(); ctx.translate(sx,b.y); ctx.rotate(b.ang||0);
+      const g = ctx.createLinearGradient(-4,-3,4,3); g.addColorStop(0,'#666'); g.addColorStop(1,'#222');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(0,0,5,3.2,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#444'; ctx.beginPath(); ctx.moveTo(-5,-1.5); ctx.lineTo(-8,-3); ctx.lineTo(-8,3); ctx.lineTo(-5,1.5); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.beginPath(); ctx.moveTo(1,-2); ctx.lineTo(3,0); ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function drawFX(camX) {
+    // fumée
+    for (const s of smokes) {
+      const sx = worldToScreenX(s.x, camX); if (sx<-80||sx>W+80) continue;
+      const t = s.life / s.max;
+      ctx.globalAlpha = t * s.a;
+      const g = ctx.createRadialGradient(sx,s.y,0,sx,s.y,s.r);
+      g.addColorStop(0,'rgba(90,90,90,0.9)'); g.addColorStop(1,'rgba(90,90,90,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx,s.y,s.r,0,Math.PI*2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // explosions
+    for (const e of explosions) {
+      const sx = worldToScreenX(e.x, camX); if (sx<-80||sx>W+80) continue;
+      const t = e.life/28;
+      const g = ctx.createRadialGradient(sx,e.y,0,sx,e.y,e.r);
+      g.addColorStop(0,`rgba(255,255,230,${0.9*t})`);
+      g.addColorStop(0.4, e.color.replace(')', `,${0.7*t})`).replace('rgb','rgba').replace('#ffcf5a',`rgba(255,200,90,${0.7*t})`).replace('#fff4cc',`rgba(255,245,210,${0.7*t})`));
+      g.addColorStop(1,'rgba(120,40,0,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx,e.y,e.r,0,Math.PI*2); ctx.fill();
+      ctx.globalAlpha = t*0.7; ctx.strokeStyle = 'rgba(255,240,200,0.9)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx,e.y,e.r*0.7,0,Math.PI*2); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // particules/étincelles
+    for (const p of particles) {
+      const sx = worldToScreenX(p.x, camX); if (sx<0||sx>W) continue;
+      ctx.globalAlpha = clamp(p.life/30,0,1);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(sx, p.y, p.s||2, p.s||2);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawHUD() {
+    // panneau
+    ctx.save();
+    const pad = 12, x=12, y=10, w=380, h=78;
+    ctx.fillStyle = 'rgba(10,18,34,0.55)';
+    roundRect(x,y,w,h,10, 'rgba(10,18,34,0.55)', 'rgba(150,190,240,0.18)');
+    ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fillRect(x+1,y+1,w-2,20);
+
+    ctx.fillStyle = '#eaf2ff'; ctx.font = 'bold 15px "Trebuchet MS", system-ui, sans-serif';
+    const fuelPct = Math.max(0, player.fuel/MAX_FUEL);
+    const leftB = buildings.filter(b=>!b.dead).length;
+    ctx.fillText(`Score ${score}`, x+12, y+22);
+    ctx.fillText(`Vies ${lives}`, x+120, y+22);
+    ctx.fillText(`Bombes ${Math.floor(player.bombs)}`, x+200, y+22);
+    ctx.fillText(`Cibles ${leftB}`, x+300, y+22);
+
+    ctx.font = '13px "Trebuchet MS", system-ui, sans-serif';
+    ctx.fillStyle = '#cfe0ff';
+    ctx.fillText(`Carburant`, x+12, y+46);
+    ctx.fillText(`Munitions ${Math.floor(player.ammo)}`, x+240, y+46);
+
+    // barre carburant
+    const bx = x+90, by = y+36, bw = 130, bh = 12;
+    ctx.fillStyle = 'rgba(255,255,255,0.08)'; roundRect(bx,by,bw,bh,6,'rgba(255,255,255,0.08)', null);
+    const col = fuelPct < 0.25 ? '#e74c3c' : (fuelPct < 0.5 ? '#f1c40f' : '#58d68d');
+    const bg = ctx.createLinearGradient(bx,by,bx,by+bh); bg.addColorStop(0, col); bg.addColorStop(1, '#2e8b57');
+    ctx.fillStyle = fuelPct < 0.25 ? col : bg;
+    roundRect(bx+1,by+1,(bw-2)*fuelPct,bh-2,5, ctx.fillStyle, null);
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)'; roundRect(bx,by,bw,bh,6,null,'rgba(255,255,255,0.18)');
+
+    // mini indicateur altitude/vitesse
+    ctx.fillStyle = '#9fbce6'; ctx.font = '12px system-ui, sans-serif';
+    ctx.fillText(`Vitesse ${player.speed.toFixed(1)}   Alt ${Math.max(0, Math.floor(groundYAt(player.x)-player.y))}`, x+12, y+68);
+
+    if (message) {
+      ctx.font = 'bold 20px "Trebuchet MS", system-ui, sans-serif';
+      const tw = ctx.measureText(message).width;
+      const mx = W/2 - tw/2 - 18, my = 18;
+      roundRect(mx,my,tw+36,36,10,'rgba(10,16,30,0.6)','rgba(255,255,255,0.12)');
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.fillText(message, W/2, 43); ctx.textAlign = 'start';
+    }
+
+    if (paused || gameOver || win) {
+      ctx.fillStyle = 'rgba(5,8,16,0.6)'; ctx.fillRect(0,0,W,H);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 46px "Trebuchet MS", system-ui, sans-serif';
+      ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 12;
+      ctx.fillText(win ? 'Victoire !' : (paused ? 'Pause' : 'Partie terminée'), W/2, H/2 - 12);
+      ctx.shadowBlur = 0;
+      ctx.font = '20px "Trebuchet MS", system-ui, sans-serif'; ctx.fillStyle = '#dce9ff';
+      ctx.fillText(win ? 'Tous les objectifs ennemis sont détruits.' : (paused ? 'Appuyez sur P pour reprendre' : 'Appuyez sur R pour rejouer'), W/2, H/2 + 26);
+      ctx.textAlign = 'start';
+    }
     ctx.restore();
   }
 
   function draw() {
-    ctx.clearRect(0,0,W,H);
-    // sky already via css background; add clouds
     const camX = player ? player.x : 0;
     ctx.save();
-    ctx.globalAlpha = 0.25; ctx.fillStyle = '#fff';
-    for (let i=0;i<8;i++) {
-      const wx = (i*600 + (performance.now()*0.01)) % WORLD_W;
-      const sx = worldToScreenX(wx, camX);
-      const y = 60 + (i%3)*35;
-      if (sx>-100 && sx<W+100) { ctx.beginPath(); ctx.ellipse(sx,y,46,16,0,0,Math.PI*2); ctx.ellipse(sx+30,y+4,34,13,0,0,Math.PI*2); ctx.fill(); }
-    }
-    ctx.restore();
+    if (shake > 0) ctx.translate(rand(-shake,shake), rand(-shake,shake));
 
+    drawSky(camX);
     drawTerrain(camX);
+    drawRubble(camX);
     for (const b of buildings) drawBuilding(b, camX);
-    for (const e of enemies) if (e.alive) drawPlane(e, camX, '#f2d9d9', '#a33b3b', true);
-    if (player && (player.alive || player.respawn>0)) drawPlane(player, camX, player.onGround?'#e6edf7':'#f4f8ff', '#2f5da8', false);
-
-    // bullets/bombs
-    ctx.fillStyle = '#fff7b0';
-    for (const b of bullets) { const sx = worldToScreenX(b.x, camX); if (sx<0||sx>W) continue; ctx.fillRect(sx-2,b.y-1,4,2); }
-    ctx.fillStyle = '#ffcf7a';
-    for (const b of enemyBullets) { const sx = worldToScreenX(b.x, camX); if (sx<0||sx>W) continue; ctx.fillRect(sx-2,b.y-1,4,2); }
-    ctx.fillStyle = '#2a2a2a';
-    for (const b of bombs) { const sx = worldToScreenX(b.x, camX); if (sx<-10||sx>W+10) continue; ctx.beginPath(); ctx.arc(sx,b.y,3,0,Math.PI*2); ctx.fill(); }
-
-    for (const p of particles) { const sx = worldToScreenX(p.x, camX); if (sx<0||sx>W) continue; ctx.globalAlpha = clamp(p.life/30,0,1); ctx.fillStyle = p.color; ctx.fillRect(sx, p.y, 2, 2); ctx.globalAlpha = 1; }
-    for (const e of explosions) { const sx = worldToScreenX(e.x, camX); if (sx<-50||sx>W+50) continue; ctx.globalAlpha = e.life/26; ctx.strokeStyle = e.color; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx,e.y,e.r,0,Math.PI*2); ctx.stroke(); ctx.globalAlpha = 1; }
-
-    // HUD
-    ctx.fillStyle = 'rgba(8,12,24,0.45)'; ctx.fillRect(10,10,360,74);
-    ctx.fillStyle = '#eaf2ff'; ctx.font = '16px system-ui, sans-serif';
-    const fuelPct = Math.max(0, Math.floor((player.fuel/MAX_FUEL)*100));
-    ctx.fillText(`Score: ${score}    Vies: ${lives}    Bombes: ${Math.floor(player.bombs)}`, 20, 32);
-    ctx.fillText(`Carburant: ${fuelPct}%    Munitions: ${Math.floor(player.ammo)}`, 20, 54);
-    const leftB = buildings.filter(b=>!b.dead).length;
-    ctx.fillText(`Bâtiments ennemis: ${leftB}`, 20, 76);
-
-    // fuel bar
-    ctx.fillStyle = '#223'; ctx.fillRect(250, 40, 100, 10);
-    ctx.fillStyle = fuelPct < 25 ? '#e74c3c' : '#58d68d'; ctx.fillRect(250, 40, 100*(fuelPct/100), 10);
-
-    if (message) {
-      ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(W/2-220, 18, 440, 34);
-      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = '20px system-ui, sans-serif'; ctx.fillText(message, W/2, 42); ctx.textAlign = 'start';
-    }
-
-    if (paused || gameOver || win) {
-      ctx.fillStyle = 'rgba(5,8,16,0.55)'; ctx.fillRect(0,0,W,H);
-      ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
-      ctx.font = 'bold 42px system-ui, sans-serif';
-      ctx.fillText(win ? 'Victoire !' : (paused ? 'Pause' : 'Partie terminée'), W/2, H/2 - 10);
-      ctx.font = '20px system-ui, sans-serif';
-      ctx.fillText(win ? 'Tous les objectifs ennemis sont détruits.' : (paused ? 'Appuyez sur P pour reprendre' : 'Appuyez sur R pour rejouer'), W/2, H/2 + 28);
-      ctx.textAlign = 'start';
-    }
+    for (const e of enemies) if (e.alive) drawPlane(e, camX, true);
+    if (player && (player.alive || player.respawn>0)) drawPlane(player, camX, false);
+    drawBombs(camX);
+    drawBullets(camX);
+    drawFX(camX);
+    ctx.restore();
+    drawHUD();
   }
 
   function loop() {
@@ -535,7 +808,6 @@
     keys.add(e.code);
     if (e.code === 'KeyP') paused = !paused;
     if (e.code === 'KeyR') resetGame(true);
-    // En vol, chaque pression modifie l'angle (pas en continu), comme le Sopwith original
     if (player && player.alive && !player.onGround && !paused) {
       if (e.code === 'ArrowUp' || e.code === 'KeyW') {
         player.heading = normAngle(player.heading - ANGLE_STEP);
