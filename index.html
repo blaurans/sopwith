@@ -20,9 +20,9 @@
   <div class="hudline" id="status">Chargement...</div>
   <div class="help">
     <strong>Commandes :</strong>
-    <kbd>↑</kbd>/<kbd>W</kbd> monter · <kbd>↓</kbd>/<kbd>S</kbd> descendre · <kbd>Espace</kbd> tirer · <kbd>B</kbd> bombe ·
-    <kbd>←</kbd>/<kbd>→</kbd> ou <kbd>A</kbd>/<kbd>D</kbd> virer · <kbd>R</kbd> recommencer · <kbd>P</kbd> pause
-    <br/>Maintenez <kbd>↑</kbd> au sol pour accélérer et décoller. Détruisez tous les bâtiments ennemis, puis revenez vous poser sur votre piste pour refaire le plein.
+    <kbd>↑</kbd>/<kbd>W</kbd> cabrer (changer l'angle, looping possible) · <kbd>↓</kbd>/<kbd>S</kbd> piquer · <kbd>Espace</kbd> tirer · <kbd>B</kbd> bombe ·
+    <kbd>←</kbd>/<kbd>→</kbd> ou <kbd>A</kbd>/<kbd>D</kbd> demi-tour · <kbd>R</kbd> recommencer · <kbd>P</kbd> pause
+    <br/>Au sol : maintenez <kbd>↑</kbd> pour accélérer et décoller. En vol : chaque pression sur <kbd>↑</kbd>/<kbd>↓</kbd> modifie l'inclinaison de l'avion (comme dans le Sopwith original). Revenez à plat sur la piste pour atterrir et ravitailler.
   </div>
 </div>
 <script>
@@ -33,20 +33,19 @@
   const W = canvas.width, H = canvas.height;
 
   const WORLD_W = 4200;
-  const GRAVITY = 0.08;
-  const LIFT = 0.16;
-  const DIVE = 0.12;
-  const MAX_VY = 4.2;
-  const MIN_SPEED = 1.8;
-  const MAX_SPEED = 5.2;
-  const THRUST = 0.03;
-  const DRAG = 0.008;
+  const GRAVITY = 0.045;
+  const THRUST = 0.035;
+  const DRAG = 0.006;
+  const MIN_SPEED = 1.2;
+  const MAX_SPEED = 6.0;
+  const STALL_SPEED = 1.6;
   const BULLET_SPEED = 9;
   const FIRE_COOLDOWN = 8;
   const BOMB_COOLDOWN = 18;
   const MAX_FUEL = 1400;
   const MAX_BOMBS = 6;
   const MAX_AMMO = 120;
+  const ANGLE_STEP = Math.PI / 12; // 15° par pression (comme le Sopwith original)
   const TURN_TIME = 22;
 
   const keys = new Set();
@@ -56,6 +55,8 @@
   function clamp(v,a,b){ return Math.max(a, Math.min(b,v)); }
   function wrapX(x){ x %= WORLD_W; if (x < 0) x += WORLD_W; return x; }
   function dxWrap(a,b){ let d = a-b; if (d > WORLD_W/2) d -= WORLD_W; if (d < -WORLD_W/2) d += WORLD_W; return d; }
+  function normAngle(a){ while (a <= -Math.PI) a += Math.PI*2; while (a > Math.PI) a -= Math.PI*2; return a; }
+  function facingFromHeading(h){ return Math.cos(h) >= 0 ? 1 : -1; }
 
   function makeTerrain() {
     const pts = [];
@@ -106,7 +107,7 @@
     const homeX = 140;
     const homeY = groundYAt(homeX) - 8;
     player = {
-      x: homeX, y: homeY, vy: 0, speed: 0, facing: 1, targetFacing: 1, turn: 0,
+      x: homeX, y: homeY, speed: 0, heading: 0, facing: 1, targetFacing: 1, turn: 0,
       fuel: MAX_FUEL, bombs: MAX_BOMBS, ammo: MAX_AMMO,
       fireCd: 0, bombCd: 0, onGround: true, alive: true, respawn: 0, inv: 0
     };
@@ -141,7 +142,7 @@
 
   function respawnPlayer() {
     const homeX = 140;
-    player.x = homeX; player.y = groundYAt(homeX)-8; player.vy = 0; player.speed = 0;
+    player.x = homeX; player.y = groundYAt(homeX)-8; player.speed = 0; player.heading = 0;
     player.facing = 1; player.targetFacing = 1; player.turn = 0;
     player.fuel = MAX_FUEL; player.bombs = MAX_BOMBS; player.ammo = MAX_AMMO;
     player.onGround = true; player.alive = true; player.respawn = 0; player.inv = 120;
@@ -154,73 +155,84 @@
     }
     if (player.inv > 0) player.inv--;
 
-    const up = keys.has('ArrowUp') || keys.has('KeyW');
-    const down = keys.has('ArrowDown') || keys.has('KeyS');
     const left = keys.has('ArrowLeft') || keys.has('KeyA');
     const right = keys.has('ArrowRight') || keys.has('KeyD');
     const fire = keys.has('Space');
     const bombKey = keys.has('KeyB');
 
+    // Demi-tour (gauche/droite) : inverse le cap horizontal
     if (player.turn <= 0) {
       if (left && player.facing === 1) { player.targetFacing = -1; player.turn = TURN_TIME; }
       else if (right && player.facing === -1) { player.targetFacing = 1; player.turn = TURN_TIME; }
     } else {
       player.turn--;
-      if (player.turn === Math.floor(TURN_TIME/2)) player.facing = player.targetFacing;
+      if (player.turn === Math.floor(TURN_TIME/2)) {
+        // miroir du cap par rapport à la verticale pour inverser la direction
+        player.heading = normAngle(Math.PI - player.heading);
+        player.facing = player.targetFacing;
+      }
       if (player.turn === 0) { player.facing = player.targetFacing; }
     }
 
+    player.facing = facingFromHeading(player.heading);
+
     if (player.onGround) {
-      // Roulage au sol : accélérer pour décoller
-      if (up) player.speed += THRUST * 1.8;
-      if (right || left) player.speed += THRUST * 0.6;
-      if (down) player.speed -= THRUST * 3.0;
+      // Roulage / décollage
+      if (keys.has('ArrowUp') || keys.has('KeyW')) player.speed += THRUST * 1.8;
+      if (keys.has('ArrowDown') || keys.has('KeyS')) player.speed -= THRUST * 3.0;
       player.speed = clamp(player.speed, 0, MAX_SPEED);
-      if (up && player.speed >= 2.3) {
-        // Décollage
+      // cap à plat dans le sens de roulage
+      player.heading = (player.facing >= 0) ? 0 : Math.PI;
+      player.y = groundYAt(player.x) - 8;
+      // décollage si assez de vitesse et touche haut maintenue
+      if ((keys.has('ArrowUp') || keys.has('KeyW')) && player.speed >= 2.4) {
         player.onGround = false;
-        player.vy = -2.2;
+        player.heading = (player.facing >= 0) ? -ANGLE_STEP : normAngle(Math.PI + ANGLE_STEP);
         player.y = groundYAt(player.x) - 10;
-      } else {
-        player.vy = 0;
-        player.y = groundYAt(player.x) - 8;
       }
-    } else {
-      // Vol
-      player.speed += THRUST * 0.7;
-      if (up) player.vy -= LIFT;
-      if (down) { player.vy += DIVE; player.speed += 0.02; }
-      player.vy += GRAVITY;
-      if (!up && !down) player.vy *= 0.992;
-      player.vy = clamp(player.vy, -MAX_VY, MAX_VY);
-      player.speed = clamp(player.speed - DRAG, 0.8, MAX_SPEED);
-      player.y += player.vy;
-      if (player.speed < MIN_SPEED) { player.vy += 0.08; } // décrochage
     }
 
-    player.x = wrapX(player.x + player.speed * player.facing);
+    if (!player.onGround) {
+      // Vol : le moteur pousse dans la direction du nez
+      player.speed += THRUST * 0.55;
+      // la gravité accélère en piqué et freine en montée
+      player.speed += -GRAVITY * Math.sin(player.heading) * 1.4;
+      player.speed = clamp(player.speed - DRAG, 0.4, MAX_SPEED);
+      // décrochage si trop lent
+      if (player.speed < STALL_SPEED) {
+        player.heading += (player.facing >= 0 ? 1 : -1) * 0.03; // nez pique
+        player.speed += 0.03;
+      }
+      player.x = wrapX(player.x + Math.cos(player.heading) * player.speed);
+      player.y += Math.sin(player.heading) * player.speed;
+      player.fuel -= 0.35 + player.speed * 0.03;
+      if (player.fuel <= 0) { player.fuel = 0; player.speed *= 0.995; player.heading += (player.facing >= 0 ? 1 : -1) * 0.01; message = 'Panne sèche !'; messageT = 40; }
+    } else {
+      player.x = wrapX(player.x + Math.cos(player.heading) * player.speed);
+    }
 
-    if (!player.onGround) player.fuel -= 0.35 + player.speed * 0.03;
-    if (player.fuel <= 0) { player.fuel = 0; player.vy += 0.12; message = 'Panne sèche !'; messageT = 40; }
+    player.facing = facingFromHeading(player.heading);
 
     const gy = groundYAt(player.x) - 8;
     if (player.y >= gy) {
       if (player.onGround) {
-        player.y = gy; player.vy = 0;
+        player.y = gy;
       } else {
         const homeX = 140;
         const nearHome = Math.abs(dxWrap(player.x, homeX)) < 70;
-        const gentle = player.vy < 2.2 && player.vy > -1.0 && player.speed < 3.6;
-        if (nearHome && gentle) {
-          // Atterrissage sur la piste
-          player.onGround = true; player.y = gy; player.vy = 0;
+        const ang = normAngle(player.heading);
+        const level = Math.abs(ang) < 0.45 || Math.abs(Math.abs(ang) - Math.PI) < 0.45;
+        const gentle = player.speed < 3.8 && Math.sin(player.heading) > -0.5;
+        if (nearHome && level && gentle) {
+          player.onGround = true; player.y = gy;
+          player.heading = (Math.abs(ang) < Math.PI/2) ? 0 : Math.PI;
           player.speed = Math.min(player.speed, 2.0);
         } else {
           player.y = gy; killPlayer(); return;
         }
       }
     }
-    if (player.y < 18) { player.y = 18; if (player.vy < 0) player.vy = 0; }
+    if (player.y < 18) { player.y = 18; }
 
     // Ravitaillement sur la piste
     const homeX = 140;
@@ -237,11 +249,13 @@
     if (player.fireCd > 0) player.fireCd--;
     if (player.bombCd > 0) player.bombCd--;
     if (fire && player.fireCd === 0 && player.ammo >= 1 && !player.onGround) {
-      bullets.push({x: player.x + player.facing*18, y: player.y+2, vx: player.facing*(BULLET_SPEED + player.speed), vy: player.vy*0.25, life: 70, friendly:true});
+      const bvx = Math.cos(player.heading) * (BULLET_SPEED + player.speed);
+      const bvy = Math.sin(player.heading) * (BULLET_SPEED + player.speed);
+      bullets.push({x: player.x + Math.cos(player.heading)*18, y: player.y + Math.sin(player.heading)*18, vx: bvx, vy: bvy, life: 70, friendly:true});
       player.fireCd = FIRE_COOLDOWN; player.ammo -= 1;
     }
     if (bombKey && player.bombCd === 0 && Math.floor(player.bombs) >= 1 && !player.onGround) {
-      bombs.push({x: player.x, y: player.y+10, vx: player.facing*player.speed*0.9, vy: Math.max(0.5, player.vy)+0.8, friendly:true});
+      bombs.push({x: player.x, y: player.y + 8, vx: Math.cos(player.heading) * player.speed * 0.8, vy: Math.sin(player.heading) * player.speed * 0.5 + 0.8, friendly:true});
       player.bombCd = BOMB_COOLDOWN; player.bombs = Math.floor(player.bombs)-1;
     }
   }
@@ -423,8 +437,11 @@
     const sy = p.y;
     ctx.save();
     ctx.translate(sx, sy);
-    ctx.scale(p.facing, 1);
-    const tilt = clamp(p.vy * 0.06, -0.5, 0.5);
+    let ang = (p.heading !== undefined) ? p.heading : (p.facing >= 0 ? 0 : Math.PI);
+    const drawFacing = Math.cos(ang) >= 0 ? 1 : -1;
+    ctx.scale(drawFacing, 1);
+    // angle de tangage relatif au sens de dessin
+    let tilt = drawFacing === 1 ? ang : normAngle(Math.PI - ang);
     ctx.rotate(tilt);
     // body
     ctx.fillStyle = colorMain;
@@ -507,15 +524,26 @@
     update();
     draw();
     const st = player.onGround ? 'Au sol (ravitaillement)' : 'En vol';
-    statusEl.textContent = `${st} — Vitesse ${player.speed.toFixed(1)} | Altitude ${Math.max(0, Math.floor(groundYAt(player.x)-player.y))}`;
+    const deg = Math.round((-player.heading * 180 / Math.PI + 360) % 360);
+    statusEl.textContent = `${st} — Vitesse ${player.speed.toFixed(1)} | Altitude ${Math.max(0, Math.floor(groundYAt(player.x)-player.y))} | Cap ${deg}°`;
     requestAnimationFrame(loop);
   }
 
   window.addEventListener('keydown', (e) => {
     if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+    if (e.repeat) { keys.add(e.code); return; }
     keys.add(e.code);
     if (e.code === 'KeyP') paused = !paused;
     if (e.code === 'KeyR') resetGame(true);
+    // En vol, chaque pression modifie l'angle (pas en continu), comme le Sopwith original
+    if (player && player.alive && !player.onGround && !paused) {
+      if (e.code === 'ArrowUp' || e.code === 'KeyW') {
+        player.heading = normAngle(player.heading - ANGLE_STEP);
+      }
+      if (e.code === 'ArrowDown' || e.code === 'KeyS') {
+        player.heading = normAngle(player.heading + ANGLE_STEP);
+      }
+    }
   });
   window.addEventListener('keyup', (e) => keys.delete(e.code));
 
