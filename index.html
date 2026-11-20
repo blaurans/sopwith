@@ -50,6 +50,8 @@
 
   const keys = new Set();
   let paused = false;
+  let pitchDir = 0; // -1 = cabrer, 1 = piquer
+  let pitchTimer = 0;
 
   function rand(a,b){ return a + Math.random()*(b-a); }
   function clamp(v,a,b){ return Math.max(a, Math.min(b,v)); }
@@ -121,6 +123,7 @@
   function resetGame(full=true) {
     terrain = makeTerrain();
     makeScenery();
+    pitchDir = 0; pitchTimer = 0;
     bullets = []; bombs = []; explosions = []; enemyBullets = []; particles = []; smokes = []; rubble = [];
     buildings = [];
     enemies = [];
@@ -164,6 +167,7 @@
   }
 
   function respawnPlayer() {
+    pitchDir = 0; pitchTimer = 0;
     const homeX = 140;
     player.x = homeX; player.y = groundYAt(homeX)-8; player.speed = 0; player.heading = 0;
     player.facing = 1; player.targetFacing = 1; player.turn = 0;
@@ -390,6 +394,29 @@
 
   function update() {
     if (paused || gameOver || win) return;
+    // Maintien haut/bas : changement d'angle continu en vol
+    if (player && player.alive && !player.onGround) {
+      const heldUp = keys.has('ArrowUp') || keys.has('KeyW');
+      const heldDown = keys.has('ArrowDown') || keys.has('KeyS');
+      if (heldUp && !heldDown) {
+        if (pitchDir !== -1) { pitchDir = -1; pitchTimer = 12; }
+      } else if (heldDown && !heldUp) {
+        if (pitchDir !== 1) { pitchDir = 1; pitchTimer = 12; }
+      } else if (!heldUp && !heldDown) {
+        pitchDir = 0; pitchTimer = 0;
+      } else {
+        pitchDir = 0; pitchTimer = 0; // les deux maintenus
+      }
+      if (pitchDir !== 0) {
+        pitchTimer--;
+        if (pitchTimer <= 0) {
+          player.heading = normAngle(player.heading + pitchDir * ANGLE_STEP);
+          pitchTimer = 5; // vitesse de répétition en maintien
+        }
+      }
+    } else {
+      pitchDir = 0; pitchTimer = 0;
+    }
     updatePlayer();
     updateBullets();
     updateBombs();
@@ -804,20 +831,32 @@
 
   window.addEventListener('keydown', (e) => {
     if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
-    if (e.repeat) { keys.add(e.code); return; }
     keys.add(e.code);
+    if (e.repeat) return;
     if (e.code === 'KeyP') paused = !paused;
     if (e.code === 'KeyR') resetGame(true);
     if (player && player.alive && !player.onGround && !paused) {
       if (e.code === 'ArrowUp' || e.code === 'KeyW') {
         player.heading = normAngle(player.heading - ANGLE_STEP);
+        pitchDir = -1; pitchTimer = 12; // délai avant répétition auto
       }
       if (e.code === 'ArrowDown' || e.code === 'KeyS') {
         player.heading = normAngle(player.heading + ANGLE_STEP);
+        pitchDir = 1; pitchTimer = 12;
       }
     }
   });
-  window.addEventListener('keyup', (e) => keys.delete(e.code));
+  window.addEventListener('keyup', (e) => {
+    keys.delete(e.code);
+    if ((e.code === 'ArrowUp' || e.code === 'KeyW') && pitchDir === -1) {
+      pitchDir = (keys.has('ArrowDown') || keys.has('KeyS')) ? 1 : 0;
+      if (pitchDir === 1) pitchTimer = 12;
+    }
+    if ((e.code === 'ArrowDown' || e.code === 'KeyS') && pitchDir === 1) {
+      pitchDir = (keys.has('ArrowUp') || keys.has('KeyW')) ? -1 : 0;
+      if (pitchDir === -1) pitchTimer = 12;
+    }
+  });
 
   resetGame(true);
   loop();
