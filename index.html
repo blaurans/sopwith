@@ -22,7 +22,7 @@
     <strong>Commandes :</strong>
     <kbd>↑</kbd>/<kbd>W</kbd> monter · <kbd>↓</kbd>/<kbd>S</kbd> descendre · <kbd>Espace</kbd> tirer · <kbd>B</kbd> bombe ·
     <kbd>←</kbd>/<kbd>→</kbd> ou <kbd>A</kbd>/<kbd>D</kbd> virer · <kbd>R</kbd> recommencer · <kbd>P</kbd> pause
-    <br/>Détruisez tous les bâtiments ennemis. Revenez vous poser sur votre piste pour refaire le plein et les bombes.
+    <br/>Maintenez <kbd>↑</kbd> au sol pour accélérer et décoller. Détruisez tous les bâtiments ennemis, puis revenez vous poser sur votre piste pour refaire le plein.
   </div>
 </div>
 <script>
@@ -147,24 +147,6 @@
     player.onGround = true; player.alive = true; player.respawn = 0; player.inv = 120;
   }
 
-  function tryLandOrTakeoff() {
-    const homeX = 140;
-    const nearHome = Math.abs(dxWrap(player.x, homeX)) < 60;
-    const gy = groundYAt(player.x) - 8;
-    if (player.onGround) {
-      // takeoff happens naturally by gaining speed/lift; keep on runway while slow
-      if (player.speed > 2.0 || player.y < gy - 2) player.onGround = false;
-    } else {
-      if (nearHome && player.y >= gy - 1 && player.vy >= -0.3 && player.vy < 2.2 && Math.abs(player.speed) < 3.2) {
-        player.onGround = true; player.y = gy; player.vy = 0; player.speed = Math.max(0, player.speed - 0.08);
-        player.fuel = Math.min(MAX_FUEL, player.fuel + 12);
-        player.bombs = Math.min(MAX_BOMBS, player.bombs + 0.08);
-        player.ammo = Math.min(MAX_AMMO, player.ammo + 1.2);
-        if (player.fuel >= MAX_FUEL-1 && player.bombs >= MAX_BOMBS-0.1) { message = 'Ravitaillement terminé'; messageT = 50; }
-      }
-    }
-  }
-
   function updatePlayer() {
     if (!player.alive) {
       if (player.respawn > 0) { player.respawn--; if (player.respawn === 0 && lives > 0) respawnPlayer(); }
@@ -189,37 +171,50 @@
     }
 
     if (player.onGround) {
-      if (up || right || left) player.speed += THRUST * 1.4;
-      if (down) player.speed -= THRUST * 2.2;
+      // Roulage au sol : accélérer pour décoller
+      if (up) player.speed += THRUST * 1.8;
+      if (right || left) player.speed += THRUST * 0.6;
+      if (down) player.speed -= THRUST * 3.0;
       player.speed = clamp(player.speed, 0, MAX_SPEED);
-      if (up && player.speed > 2.1) { player.onGround = false; player.vy = -1.6; }
-      player.vy = 0;
-      player.y = groundYAt(player.x) - 8;
+      if (up && player.speed >= 2.3) {
+        // Décollage
+        player.onGround = false;
+        player.vy = -2.2;
+        player.y = groundYAt(player.x) - 10;
+      } else {
+        player.vy = 0;
+        player.y = groundYAt(player.x) - 8;
+      }
     } else {
-      player.speed += THRUST - (down ? 0.01 : 0) - (up ? 0.005 : 0);
+      // Vol
+      player.speed += THRUST * 0.7;
       if (up) player.vy -= LIFT;
-      if (down) player.vy += DIVE;
+      if (down) { player.vy += DIVE; player.speed += 0.02; }
       player.vy += GRAVITY;
-      if (!up && !down) player.vy *= 0.995;
+      if (!up && !down) player.vy *= 0.992;
       player.vy = clamp(player.vy, -MAX_VY, MAX_VY);
-      player.speed = clamp(player.speed - DRAG + (down?0.02:0), MIN_SPEED*0.6, MAX_SPEED);
+      player.speed = clamp(player.speed - DRAG, 0.8, MAX_SPEED);
       player.y += player.vy;
-      // stall-ish
-      if (player.speed < MIN_SPEED) { player.vy += 0.06; }
+      if (player.speed < MIN_SPEED) { player.vy += 0.08; } // décrochage
     }
 
     player.x = wrapX(player.x + player.speed * player.facing);
 
-    if (!player.onGround) player.fuel -= 0.35 + player.speed*0.03;
+    if (!player.onGround) player.fuel -= 0.35 + player.speed * 0.03;
     if (player.fuel <= 0) { player.fuel = 0; player.vy += 0.12; message = 'Panne sèche !'; messageT = 40; }
 
     const gy = groundYAt(player.x) - 8;
-    if (player.y > gy) {
-      if (player.onGround) { player.y = gy; }
-      else {
-        const nearHome = Math.abs(dxWrap(player.x, 140)) < 60;
-        if (nearHome && Math.abs(player.vy) < 2.0 && player.speed < 3.4) {
+    if (player.y >= gy) {
+      if (player.onGround) {
+        player.y = gy; player.vy = 0;
+      } else {
+        const homeX = 140;
+        const nearHome = Math.abs(dxWrap(player.x, homeX)) < 70;
+        const gentle = player.vy < 2.2 && player.vy > -1.0 && player.speed < 3.6;
+        if (nearHome && gentle) {
+          // Atterrissage sur la piste
           player.onGround = true; player.y = gy; player.vy = 0;
+          player.speed = Math.min(player.speed, 2.0);
         } else {
           player.y = gy; killPlayer(); return;
         }
@@ -227,7 +222,17 @@
     }
     if (player.y < 18) { player.y = 18; if (player.vy < 0) player.vy = 0; }
 
-    tryLandOrTakeoff();
+    // Ravitaillement sur la piste
+    const homeX = 140;
+    const nearHome = Math.abs(dxWrap(player.x, homeX)) < 70;
+    if (player.onGround && nearHome) {
+      const wasFull = player.fuel >= MAX_FUEL - 1 && player.bombs >= MAX_BOMBS - 0.1 && player.ammo >= MAX_AMMO - 1;
+      player.fuel = Math.min(MAX_FUEL, player.fuel + 10);
+      player.bombs = Math.min(MAX_BOMBS, player.bombs + 0.06);
+      player.ammo = Math.min(MAX_AMMO, player.ammo + 0.8);
+      const isFull = player.fuel >= MAX_FUEL - 1 && player.bombs >= MAX_BOMBS - 0.1 && player.ammo >= MAX_AMMO - 1;
+      if (!wasFull && isFull) { message = 'Ravitaillement terminé'; messageT = 60; }
+    }
 
     if (player.fireCd > 0) player.fireCd--;
     if (player.bombCd > 0) player.bombCd--;
